@@ -8,61 +8,105 @@
 #include <cstring>
 #include <zstd.h>
 
-// Simple hash function to replace XXH64 (compatible implementation)
-static u64 SimpleHash64(const void* data, size_t len, u64 seed = 0) {
+// XXH64 implementation to match ZSTD seekable format specification
+static u64 XXH64(const void* data, size_t len, u64 seed = 0) {
     const u8* p = static_cast<const u8*>(data);
-    u64 h = seed + len;
+    const u8* const end = p + len;
+    u64 h64;
     
-    for (size_t i = 0; i < len; ++i) {
-        h ^= p[i];
-        h *= 1099511628211ULL; // FNV prime
+    const u64 prime64_1 = 11400714785074694791ULL;
+    const u64 prime64_2 = 14029467366897019727ULL;
+    const u64 prime64_3 =  1609587929392839161ULL;
+    const u64 prime64_4 =  9650029242287828579ULL;
+    const u64 prime64_5 =  2870177450012600261ULL;
+    
+    if (len >= 32) {
+        const u8* const limit = end - 32;
+        u64 v1 = seed + prime64_1 + prime64_2;
+        u64 v2 = seed + prime64_2;
+        u64 v3 = seed + 0;
+        u64 v4 = seed - prime64_1;
+        
+        auto read64 = [](const u8* ptr) -> u64 {
+            u64 val;
+            memcpy(&val, ptr, sizeof(val));
+            return val; // Assuming little-endian
+        };
+        
+        auto rotl64 = [](u64 x, int r) -> u64 {
+            return (x << r) | (x >> (64 - r));
+        };
+        
+        do {
+            v1 = rotl64(v1 + read64(p) * prime64_2, 31) * prime64_1;
+            p += 8;
+            v2 = rotl64(v2 + read64(p) * prime64_2, 31) * prime64_1;
+            p += 8;
+            v3 = rotl64(v3 + read64(p) * prime64_2, 31) * prime64_1;
+            p += 8;
+            v4 = rotl64(v4 + read64(p) * prime64_2, 31) * prime64_1;
+            p += 8;
+        } while (p <= limit);
+        
+        h64 = rotl64(v1, 1) + rotl64(v2, 7) + rotl64(v3, 12) + rotl64(v4, 18);
+        
+        auto merge64 = [&](u64 acc, u64 val) -> u64 {
+            val = rotl64(val * prime64_2, 31) * prime64_1;
+            acc ^= val;
+            acc = acc * prime64_1 + prime64_4;
+            return acc;
+        };
+        
+        h64 = merge64(h64, v1);
+        h64 = merge64(h64, v2);
+        h64 = merge64(h64, v3);
+        h64 = merge64(h64, v4);
+    } else {
+        h64 = seed + prime64_5;
     }
     
-    return h;
+    h64 += len;
+    
+    auto rotl64 = [](u64 x, int r) -> u64 {
+        return (x << r) | (x >> (64 - r));
+    };
+    
+    while (p + 8 <= end) {
+        u64 k1;
+        memcpy(&k1, p, sizeof(k1));
+        k1 *= prime64_2;
+        k1 = rotl64(k1, 31);
+        k1 *= prime64_1;
+        h64 ^= k1;
+        h64 = rotl64(h64, 27) * prime64_1 + prime64_4;
+        p += 8;
+    }
+    
+    if (p + 4 <= end) {
+        u32 k1;
+        memcpy(&k1, p, sizeof(k1));
+        h64 ^= (u64)k1 * prime64_1;
+        h64 = rotl64(h64, 23) * prime64_2 + prime64_3;
+        p += 4;
+    }
+    
+    while (p < end) {
+        u8 k1 = *p++;
+        h64 ^= k1 * prime64_5;
+        h64 = rotl64(h64, 11) * prime64_1;
+    }
+    
+    h64 ^= h64 >> 33;
+    h64 *= prime64_2;
+    h64 ^= h64 >> 29;
+    h64 *= prime64_3;
+    h64 ^= h64 >> 32;
+    
+    return h64;
 }
 
 // We'll implement seekable compression using standard ZSTD with custom framing
 // This is a simplified version that creates seekable frames manually
-
-// Add this constructor to handle vector input instead of span
-Z3DSMetadata::Z3DSMetadata(const std::vector<u8>& source_data) {
-    if (source_data.empty()) {
-        return;
-    }
-    
-    std::string buf(reinterpret_cast<const char*>(source_data.data()), source_data.size());
-    std::istringstream in(buf, std::ios::binary);
-    
-    u8 version;
-    in.read(reinterpret_cast<char*>(&version), sizeof(version));
-    
-    if (version != METADATA_VERSION) {
-        return;
-    }
-    
-    while (!in.eof()) {
-        Item item;
-        in.read(reinterpret_cast<char*>(&item), sizeof(Item));
-        
-        // If end item is reached, stop processing
-        if (item.type == Item::TYPE_END) {
-            break;
-        }
-        
-        // Only binary type supported for now
-        if (item.type != Item::TYPE_BINARY) {
-            in.ignore(static_cast<std::streamsize>(item.name_len) + item.data_len);
-            continue;
-        }
-        
-        std::string name(item.name_len, '\0');
-        std::vector<u8> data(item.data_len);
-        in.read(name.data(), name.size());
-        in.read(reinterpret_cast<char*>(data.data()), data.size());
-        
-        items.insert({std::move(name), std::move(data)});
-    }
-}
 
 void Z3DSMetadata::Add(const std::string& name, const std::string& data) {
     items[name] = std::vector<u8>(data.begin(), data.end());
@@ -254,10 +298,10 @@ private:
             return true;
         }
         
-        // Calculate checksum if enabled
+        // Calculate checksum if enabled (use least significant 32 bits of XXH64)
         u32 checksum = 0;
         if (use_checksums) {
-            u64 hash = SimpleHash64(frame_buffer.data(), frame_buffer.size(), 0);
+            u64 hash = XXH64(frame_buffer.data(), frame_buffer.size(), 0);
             checksum = static_cast<u32>(hash & 0xFFFFFFFF);
         }
         
@@ -307,30 +351,41 @@ private:
         size_t entry_size = use_checksums ? 12 : 8; // 4+4+4 or 4+4 bytes per entry
         size_t table_size = seek_entries.size() * entry_size + 9; // +9 for footer
         
-        // Write skippable frame header
+        // Helper function to write little-endian values
+        auto write_le32 = [&](u32 value) {
+            u8 bytes[4] = {
+                static_cast<u8>(value & 0xFF),
+                static_cast<u8>((value >> 8) & 0xFF),
+                static_cast<u8>((value >> 16) & 0xFF),
+                static_cast<u8>((value >> 24) & 0xFF)
+            };
+            output.write(reinterpret_cast<const char*>(bytes), 4);
+        };
+        
+        // Write skippable frame header (little-endian)
         u32 skippable_magic = 0x184D2A5E; // ZSTD skippable frame magic
         u32 frame_size = static_cast<u32>(table_size);
         
-        output.write(reinterpret_cast<const char*>(&skippable_magic), 4);
-        output.write(reinterpret_cast<const char*>(&frame_size), 4);
+        write_le32(skippable_magic);
+        write_le32(frame_size);
         
-        // Write seek table entries
+        // Write seek table entries (little-endian)
         for (const auto& entry : seek_entries) {
-            output.write(reinterpret_cast<const char*>(&entry.compressed_size), 4);
-            output.write(reinterpret_cast<const char*>(&entry.decompressed_size), 4);
+            write_le32(entry.compressed_size);
+            write_le32(entry.decompressed_size);
             if (use_checksums) {
-                output.write(reinterpret_cast<const char*>(&entry.checksum), 4);
+                write_le32(entry.checksum);
             }
         }
         
-        // Write seek table footer
+        // Write seek table footer (little-endian)
         u32 num_frames = static_cast<u32>(seek_entries.size());
         u8 descriptor = use_checksums ? 0x80 : 0x00; // bit 7 = checksum flag
         u32 seekable_magic = 0x8F92EAB1; // Seekable ZSTD magic
         
-        output.write(reinterpret_cast<const char*>(&num_frames), 4);
+        write_le32(num_frames);
         output.write(reinterpret_cast<const char*>(&descriptor), 1);
-        output.write(reinterpret_cast<const char*>(&seekable_magic), 4);
+        write_le32(seekable_magic);
         
         if (!output.good()) {
             std::cerr << "Error writing seek table" << std::endl;
@@ -430,10 +485,53 @@ bool CompressZ3DSFile(const std::string& src_file, const std::string& dst_file,
         return false;
     }
     
-    // Update header with compressed size
+    // Update header with compressed size (ensure little-endian)
     header.compressed_size = compressor.GetTotalCompressed();
     output.seekp(header_pos);
-    output.write(reinterpret_cast<const char*>(&header), sizeof(header));
+    
+    // Write header with proper little-endian byte ordering
+    output.write(reinterpret_cast<const char*>(header.magic.data()), 4);
+    output.write(reinterpret_cast<const char*>(header.underlying_magic.data()), 4);
+    output.write(reinterpret_cast<const char*>(&header.version), 1);
+    output.write(reinterpret_cast<const char*>(&header.reserved), 1);
+    
+    // Write 16-bit and larger fields in little-endian
+    auto write_le16 = [&](u16 value) {
+        u8 bytes[2] = {
+            static_cast<u8>(value & 0xFF),
+            static_cast<u8>((value >> 8) & 0xFF)
+        };
+        output.write(reinterpret_cast<const char*>(bytes), 2);
+    };
+    
+    auto write_le32 = [&](u32 value) {
+        u8 bytes[4] = {
+            static_cast<u8>(value & 0xFF),
+            static_cast<u8>((value >> 8) & 0xFF),
+            static_cast<u8>((value >> 16) & 0xFF),
+            static_cast<u8>((value >> 24) & 0xFF)
+        };
+        output.write(reinterpret_cast<const char*>(bytes), 4);
+    };
+    
+    auto write_le64 = [&](u64 value) {
+        u8 bytes[8] = {
+            static_cast<u8>(value & 0xFF),
+            static_cast<u8>((value >> 8) & 0xFF),
+            static_cast<u8>((value >> 16) & 0xFF),
+            static_cast<u8>((value >> 24) & 0xFF),
+            static_cast<u8>((value >> 32) & 0xFF),
+            static_cast<u8>((value >> 40) & 0xFF),
+            static_cast<u8>((value >> 48) & 0xFF),
+            static_cast<u8>((value >> 56) & 0xFF)
+        };
+        output.write(reinterpret_cast<const char*>(bytes), 8);
+    };
+    
+    write_le16(header.header_size);
+    write_le32(header.metadata_size);
+    write_le64(header.compressed_size);
+    write_le64(header.uncompressed_size);
     
     if (!output.good()) {
         std::cerr << "Error writing final header" << std::endl;

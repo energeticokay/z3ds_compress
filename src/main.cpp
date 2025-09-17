@@ -2,7 +2,6 @@
 #include <iostream>
 #include <filesystem>
 #include <chrono>
-#include <iomanip>  // For std::setprecision
 
 void showUsage(const char* program_name) {
     std::cout << "Z3DS ROM Compressor - CLI Version\n";

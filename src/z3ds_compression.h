@@ -6,6 +6,7 @@
 #include <functional>
 #include <unordered_map>
 #include <cstdint>
+#include <span>
 
 using u8 = uint8_t;
 using u16 = uint16_t;
@@ -33,7 +34,6 @@ public:
     static constexpr u8 METADATA_VERSION = 1;
     
     Z3DSMetadata() = default;
-    Z3DSMetadata(const std::vector<u8>& source_data);
     
     void Add(const std::string& name, const std::string& data);
     void Add(const std::string& name, const std::vector<u8>& data);
