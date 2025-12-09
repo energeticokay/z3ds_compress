@@ -121,11 +121,11 @@ int main(int argc, char* argv[]) {
     
     // Use auto frame size if not specified
     if (frame_size == 0) {
-        frame_size = GetDefaultFrameSize(magic);
+        frame_size = GetDefaultFrameSize();
     }
     
     std::cout << "Using frame size: " << frame_size << " bytes (" 
-              << (frame_size / 1024 / 1024) << " MB)" << std::endl;
+              << (frame_size / 1024) << " KB)" << std::endl;
     
     std::cout << "Compressing: " << input_file << std::endl;
     std::cout << "Output: " << output_file << std::endl;

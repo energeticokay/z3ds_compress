@@ -66,5 +66,5 @@ bool CompressZ3DSFile(const std::string& src_file, const std::string& dst_file,
 
 // Utility functions
 std::array<u8, 4> DetectFileMagic(const std::string& filename);
-size_t GetDefaultFrameSize(const std::array<u8, 4>& magic);
+size_t GetDefaultFrameSize();
 std::string GetCurrentTimeISO();

@@ -197,12 +197,8 @@ std::array<u8, 4> DetectFileMagic(const std::string& filename) {
     return {'U', 'N', 'K', 'N'};
 }
 
-size_t GetDefaultFrameSize(const std::array<u8, 4>& magic) {
-    // CIA and CCI files use larger frame size (32MB), others use 1MB
-    if (magic == std::array<u8, 4>{'N', 'C', 'S', 'D'}) {
-        return 32 * 1024 * 1024; // 32MB for CIA/CCI
-    }
-    return 1024 * 1024; // 1MB for CXI and 3DSX
+size_t GetDefaultFrameSize() {
+    return 256* 1024; // Use default frame size of 256KB
 }
 
 std::string GetCurrentTimeISO() {
